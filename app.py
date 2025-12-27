@@ -33,7 +33,6 @@ For permissions contact:
 Dr. Gummanur T. Manjunath
 """
 
-
 import math
 import pandas as pd
 import requests
@@ -99,14 +98,27 @@ div[data-testid="stMarkdownContainer"] p {margin-bottom: 0.25rem;}
 # </style>
 # """, unsafe_allow_html=True)
 
-# ============================================================== 
+# ==============================================================
 # BLOCK 0-A — LANDING / WELCOME GATE (PROPERLY GATED)
 # ==============================================================
 
 ss = st.session_state
+
+# ----------------------------
+# Global session bootstrap
+# ----------------------------
 if "landing_open" not in ss:
     ss["landing_open"] = False
 
+if "units" not in ss:
+    ss["units"] = "metric"          # metric or imperial
+
+if "band_units" not in ss:
+    ss["band_units"] = "metric"
+
+# ----------------------------
+# Landing page
+# ----------------------------
 if not ss["landing_open"]:
     st.markdown("""
     <div class="welcome-box">
@@ -132,9 +144,31 @@ if not ss["landing_open"]:
         st.rerun()
 
     st.stop()
- 
+
+
 # ======================================================================
 # WORKING PAGE HEADER (shown after landing gate opens)
+# ======================================================================
+
+# ======================================================================
+# MOBILE-SAFE DISPLAY UNIT SELECTOR  (DESKTOP + PHONE)
+# ======================================================================
+
+st.markdown("### 🌍 Display Units")
+
+unit_choice = st.radio(
+    "",
+    ["Metric (°C, m/s, kPa)", "Imperial (°F, mph, inHg)"],
+    index=0 if ss["units"] == "metric" else 1,
+    horizontal=True,
+)
+
+ss["units"] = "metric" if unit_choice.startswith("Metric") else "imperial"
+
+st.markdown("---")
+
+# ======================================================================
+# Page title
 # ======================================================================
 
 st.markdown("<div class='section-title'>🌡️ CHSRMT — Field Heat-Stress Dashboard</div>", unsafe_allow_html=True)
@@ -145,8 +179,6 @@ Enter local measurements if available.
 Or search a city and fetch weather for an approximate site baseline.  
 Scroll down for thresholds, guidance and appendix.
 """)
-
-# st.title("🌡️ CHSRMT — Field Heat-Stress Dashboard")
 
 # ----------------------------
 # Unit conversion helpers
@@ -162,41 +194,39 @@ def inhg_to_kpa(i): return i / 0.2953
 # Temperature formatting
 # ----------------------------
 def fmt_temp(temp_c, unit):
-    return f"{temp_c:.1f} °C" if unit=="metric" else f"{c_to_f(temp_c):.1f} °F"
+    return f"{temp_c:.1f} °C" if unit == "metric" else f"{c_to_f(temp_c):.1f} °F"
 
 # ----------------------------
-# Safe session init
+# Safe defaults
 # ----------------------------
-ss = st.session_state
 def ss_default(key, val):
     if key not in ss:
         ss[key] = val
 
-# Core environmental storage (always internally °C, m/s, kPa)
-ss_default("units", "metric")        # User display choice — metric or imperial
-ss_default("db_c", 32.0)            # Dry bulb °C
-ss_default("rh_pct", 60.0)          # Relative humidity %
-ss_default("ws_ms", 1.0)            # Wind speed m/s
-ss_default("p_kpa", 101.3)          # Pressure kPa
-ss_default("gt_c", 35.0)            # Globe temperature °C
+# Core environmental storage (always internal °C, m/s, kPa)
+ss_default("db_c", 32.0)
+ss_default("rh_pct", 60.0)
+ss_default("ws_ms", 1.0)
+ss_default("p_kpa", 101.3)
+ss_default("gt_c", 35.0)
 
 # WBGT storage
 ss_default("wbgt_raw_c", None)
 ss_default("wbgt_eff_c", None)
 
-# Risk thresholds (NIOSH-aligned defaults)
-ss_default("thr_green_c", 29.0)   # Below 29 = Low
-ss_default("thr_amber_c", 32.0)   # 29–32 caution
-ss_default("thr_red_c", 32.0)     # above 32 = withdrawal
+# Risk thresholds
+ss_default("thr_A_c", 29.0)
+ss_default("thr_B_c", 32.0)
+ss_default("thr_C_c", 35.0)
 
-# Penalty storage
+# Penalties
 ss_default("pen_clo_c", 0.0)
 ss_default("pen_veh_c", 0.0)
 ss_default("pen_rad_c", 0.0)
 ss_default("pen_adhoc_c", 0.0)
 ss_default("total_penalty_c", 0.0)
 
-# Logging array
+# Logging
 ss_default("audit_log", [])
 
 # ======================================================================
@@ -640,72 +670,134 @@ else:
         "Thresholds automatically lowered for **non-acclimatized** workers "
         "(more conservative safety margin)."
     )
+
 # ======================================================================
 # BLOCK 7 — WBGT RISK CLASSIFICATION (POST-PENALTY)
 # ======================================================================
 
+# ----------------------------------------------------------------------
+# Sticky risk card CSS (glass style — mobile + desktop safe)
+# ----------------------------------------------------------------------
+st.markdown("""
+<style>
+.sticky-risk {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    background: rgba(15, 20, 25, 0.92);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    padding: 12px 12px 10px 12px;
+    border-bottom: 2px solid rgba(255,255,255,0.15);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.55);
+}
+
+.risk-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.risk-box {
+    background: rgba(255,255,255,0.06);
+    padding: 10px;
+    border-radius: 10px;
+    flex: 1;
+    min-width: 120px;
+    text-align: center;
+}
+
+.risk-title {
+    font-size: 12px;
+    color: #bbb;
+}
+
+.risk-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: white;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("## 🧭 Heat-Stress Classification & Worker Guidance")
 
-wbgt_eff = ss.get("wbgt_eff_c", None)
+wbgt_eff = ss.get("wbgt_eff_c")
 
 if wbgt_eff is None:
     st.info("No computed WBGT value yet — apply adjustments and compute.")
 else:
+
     A = ss["thr_A_c"]
     B = ss["thr_B_c"]
     C = ss["thr_C_c"]
 
-    # Determine band
+    # -----------------------------
+    # Determine risk band
+    # -----------------------------
     if wbgt_eff < A:
         band = "Low environmental heat stress"
         colour = "🟢"
-        msg = (
-            "Suitable for normal operations. Maintain hydration and routine supervision."
-        )
+        msg = "Normal operations acceptable. Maintain hydration and routine supervision."
     elif wbgt_eff < B:
         band = "Heightened / Caution"
         colour = "🟠"
-        msg = (
-            "Increase supervision, enforce hydration, consider work–rest cycles."
-        )
+        msg = "Increase supervision. Enforce hydration and apply work–rest cycles."
     elif wbgt_eff < C:
         band = "High strain warning"
         colour = "🔴"
-        msg = (
-            "Restrict exposure, enforce shortened work–rest cycles, "
-            "actively cool workers, medical watch."
-        )
+        msg = "Restrict exposure. Enforce shortened work–rest cycles and active cooling."
     else:
         band = "Withdrawal / Stop Work"
         colour = "🚫"
-        msg = (
-            "Stop normal work. Only emergency tasks with strict controls "
-            "and medical monitoring."
-        )
+        msg = "Stop normal work. Only emergency tasks with strict controls and medical monitoring."
 
-    # Save for logging / export
     ss["risk_band"] = band
 
-    # Display metrics
-    col1, col2, col3 = st.columns(3)
+    # -----------------------------
+    # Display values in user units
+    # -----------------------------
+    if ss["units"] == "metric":
+        wbgt_disp = f"{wbgt_eff:.1f} °C"
+        pen_disp = f"+{ss.get('total_penalty_c',0):.1f} °C"
+    else:
+        wbgt_disp = f"{(wbgt_eff * 9/5 + 32):.1f} °F"
+        pen_disp = f"+{(ss.get('total_penalty_c',0) * 9/5):.1f} °F"
 
-    with col1:
-        st.metric("WBGT (effective)", fmt_temp(wbgt_eff, ss["units"]))
+    # ------------------------------------------------------------------
+    # STICKY FIELD RISK CARD (Supervisor view)
+    # ------------------------------------------------------------------
+    st.markdown(f"""
+    <div class="sticky-risk">
+        <div class="risk-row">
+            <div class="risk-box">
+                <div class="risk-title">WBGT Effective</div>
+                <div class="risk-value">{wbgt_disp}</div>
+            </div>
+            <div class="risk-box">
+                <div class="risk-title">Risk Category</div>
+                <div class="risk-value">{colour} {band}</div>
+            </div>
+            <div class="risk-box">
+                <div class="risk-title">Penalties</div>
+                <div class="risk-value">{pen_disp}</div>
+            </div>
+        </div>
+        <div style="margin-top:8px; font-size:14px; color:#eee;">
+            <b>Supervisor guidance:</b> {msg}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    with col2:
-        st.metric("Risk category", f"{colour} {band}")
-
-    with col3:
-        if ss["units"] == "metric":
-            st.metric("Penalties applied", f"+{ss.get('total_penalty_c', 0):.1f} °C")
-        else:
-            st.metric("Penalties applied", f"+{(ss.get('total_penalty_c', 0) * 9/5):.1f} °F")
-
+    # ------------------------------------------------------------------
+    # Detailed guidance below (scrollable)
+    # ------------------------------------------------------------------
     st.markdown("### 👷 Supervisor Guidance")
     st.write(msg)
 
-    # Optional CHSI dummy scaling (0–50)
-    chsi_raw = wbgt_eff - 25.0   # placeholder
+    # Optional CHSI surrogate
+    chsi_raw = wbgt_eff - 25.0
     chsi_scaled = max(0, min(50, (chsi_raw / 10) * 50))
     ss["chsi_scaled"] = chsi_scaled
 
@@ -713,13 +805,13 @@ else:
     if chsi_scaled < 15:
         st.success(f"CHSI {chsi_scaled:.0f} — low internal strain.")
     elif chsi_scaled < 30:
-        st.warning(f"CHSI {chsi_scaled:.0f} — mild heat accumulation.")
+        st.warning(f"CHSI {chsi_scaled:.0f} — moderate heat accumulation.")
     else:
-        st.error(f"CHSI {chsi_scaled:.0f} — major heat strain risk!")
+        st.error(f"CHSI {chsi_scaled:.0f} — severe heat-strain risk!")
 
     st.caption(
-        "CHSI here is an **internal heat-strain surrogate**, scaled for simplicity. "
-        "Real CHSI requires physiology modelling."
+        "CHSI shown here is a simplified internal strain surrogate. "
+        "Full CHSI requires physiological modelling."
     )
 
 # ======================================================================
